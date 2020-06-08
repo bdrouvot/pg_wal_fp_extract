@@ -79,8 +79,6 @@ static void pgwfe_XLogDumpRecord(XLogDumpConfig *config, XLogReaderState *record
 static bool pgwfe_RestoreBlockImage(XLogDumpConfig *config, XLogReaderState *record,
 				uint8 block_id, Oid spcNode, Oid dbNode, Oid relNode, const char *forkname, int blk);
 
-#define MAX_XLINFO_TYPES 16
-
 static bool
 pgwfe_RestoreBlockImage(XLogDumpConfig *config, XLogReaderState *record,
 					uint8 block_id, Oid spcNode, Oid dbNode, Oid relNode, const char *forkname, int blk)
