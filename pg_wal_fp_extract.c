@@ -79,6 +79,100 @@ static void pgwfe_XLogDumpRecord(XLogDumpConfig *config, XLogReaderState *record
 static bool pgwfe_RestoreBlockImage(XLogDumpConfig *config, XLogReaderState *record,
 				uint8 block_id, Oid spcNode, Oid dbNode, Oid relNode, const char *forkname, int blk);
 
+
+#if PG_VERSION_NUM >= 130000
+static void
+WALDumpOpenSegment(XLogReaderState *state, XLogSegNo nextSegNo,
+				   TimeLineID *tli_p)
+{
+	TimeLineID	tli = *tli_p;
+	char		fname[MAXPGPATH];
+	int			tries;
+
+	XLogFileName(fname, tli, nextSegNo, state->segcxt.ws_segsize);
+
+	/*
+	 * In follow mode there is a short period of time after the server has
+	 * written the end of the previous file before the new file is available.
+	 * So we loop for 5 seconds looking for the file to appear before giving
+	 * up.
+	 */
+	for (tries = 0; tries < 10; tries++)
+	{
+		state->seg.ws_file = open_file_in_directory(state->segcxt.ws_dir, fname);
+		if (state->seg.ws_file >= 0)
+			return;
+		if (errno == ENOENT)
+		{
+			int			save_errno = errno;
+
+			/* File not there yet, try again */
+			pg_usleep(500 * 1000);
+
+			errno = save_errno;
+			continue;
+		}
+		/* Any other error, fall through and fail */
+		break;
+	}
+
+	fatal_error("could not find file \"%s\": %m", fname);
+}
+
+static void
+WALDumpCloseSegment(XLogReaderState *state)
+{
+	close(state->seg.ws_file);
+	/* need to check errno? */
+	state->seg.ws_file = -1;
+}
+
+static int
+WALDumpReadPage(XLogReaderState *state, XLogRecPtr targetPagePtr, int reqLen,
+				XLogRecPtr targetPtr, char *readBuff)
+{
+	XLogDumpPrivate *private = state->private_data;
+	int			count = XLOG_BLCKSZ;
+	WALReadError errinfo;
+
+	if (private->endptr != InvalidXLogRecPtr)
+	{
+		if (targetPagePtr + XLOG_BLCKSZ <= private->endptr)
+			count = XLOG_BLCKSZ;
+		else if (targetPagePtr + reqLen <= private->endptr)
+			count = private->endptr - targetPagePtr;
+		else
+		{
+			private->endptr_reached = true;
+			return -1;
+		}
+	}
+
+	if (!WALRead(state, readBuff, targetPagePtr, count, private->timeline,
+				 &errinfo))
+	{
+		WALOpenSegment *seg = &errinfo.wre_seg;
+		char		fname[MAXPGPATH];
+
+		XLogFileName(fname, seg->ws_tli, seg->ws_segno,
+					 state->segcxt.ws_segsize);
+
+		if (errinfo.wre_errno != 0)
+		{
+			errno = errinfo.wre_errno;
+			fatal_error("could not read from file %s, offset %u: %m",
+						fname, errinfo.wre_off);
+		}
+		else
+			fatal_error("could not read from file %s, offset %u: read %d of %zu",
+						fname, errinfo.wre_off, errinfo.wre_read,
+						(Size) errinfo.wre_req);
+	}
+
+	return count;
+}
+#endif
+
 static bool
 pgwfe_RestoreBlockImage(XLogDumpConfig *config, XLogReaderState *record,
 					uint8 block_id, Oid spcNode, Oid dbNode, Oid relNode, const char *forkname, int blk)
@@ -200,6 +294,7 @@ pgwfe_XLogDumpRecord(XLogDumpConfig *config, XLogReaderState *record)
  * given timeline, containing the specified record pointer; store the data in
  * the passed buffer.
  */
+#if PG_VERSION_NUM < 130000
 static void
 XLogDumpXLogRead(const char *directory, TimeLineID timeline_id,
 					XLogRecPtr startptr, char *buf, Size count)
@@ -301,7 +396,9 @@ XLogDumpXLogRead(const char *directory, TimeLineID timeline_id,
 		p += readbytes;
 	}
 }
+#endif
 
+#if PG_VERSION_NUM < 130000
 static int
 XLogDumpReadPage(XLogReaderState *state, XLogRecPtr targetPagePtr, int reqLen,
 				 XLogRecPtr targetPtr, char *readBuff, TimeLineID *curFileTLI)
@@ -326,6 +423,7 @@ XLogDumpReadPage(XLogReaderState *state, XLogRecPtr targetPagePtr, int reqLen,
 
 	return count;
 }
+#endif
 
 static void
 split_path(const char *path, char **dir, char **fname)
@@ -394,6 +492,9 @@ main(int argc, char **argv)
 	XLogRecord *record;
 	XLogRecPtr      first_record;
 	char       *errormsg;
+#if PG_VERSION_NUM >= 130000
+	char       *waldir = NULL;
+#endif
 
 	static struct option long_options[] = {
 		{"help", no_argument, NULL, '?'},
@@ -403,6 +504,9 @@ main(int argc, char **argv)
 		{"start", required_argument, NULL, 's'},
 		{"xid", required_argument, NULL, 'x'},
 		{"relid", required_argument, NULL, 'r'},
+#if PG_VERSION_NUM >= 130000
+		{"path", required_argument, NULL, 'p'},
+#endif
 		{"dest", required_argument, NULL, 'd'},
 		{NULL, 0, NULL, 0}
 	};
@@ -449,7 +553,7 @@ main(int argc, char **argv)
 		goto bad_argument;
 	}
 
-	while ((option = getopt_long(argc, argv, "tcx:r:d:e:s:",
+	while ((option = getopt_long(argc, argv, "tcx:r:d:e:s:p:",
 							long_options, &optindex)) != -1)
 	{
 		switch (option)
@@ -460,6 +564,11 @@ main(int argc, char **argv)
 			case 'c':
 				config.checksum = true;
 				break;
+#if PG_VERSION_NUM >= 130000
+			case 'p':
+				waldir = pg_strdup(optarg);
+				break;
+#endif
 			case 'x':
 				if (sscanf(optarg, "%u", &config.filter_by_xid) != 1)
 				{
@@ -568,7 +677,14 @@ main(int argc, char **argv)
 		XLogFromFileName(fname, &private.timeline, &segno);
 #endif
 		if (XLogRecPtrIsInvalid(private.startptr))
-#if PG_VERSION_NUM >= 110000
+#if PG_VERSION_NUM >= 130000
+			XLogSegNoOffsetToRecPtr(segno, 0, WalSegSz, private.startptr);
+			xlogreader_state = XLogReaderAllocate(WalSegSz, waldir,
+												  XL_ROUTINE(.page_read = WALDumpReadPage,
+															 .segment_open = WALDumpOpenSegment,
+															 .segment_close = WALDumpCloseSegment),
+												  &private);
+#elif PG_VERSION_NUM >= 110000
 			XLogSegNoOffsetToRecPtr(segno, 0, WalSegSz, private.startptr);
 			xlogreader_state = XLogReaderAllocate(WalSegSz, XLogDumpReadPage, &private);
 #else
@@ -601,7 +717,11 @@ main(int argc, char **argv)
 			for (;;)
 			{
 				/* try to read the next record */
+#if PG_VERSION_NUM >= 130000
+				record = XLogReadRecord(xlogreader_state, &errormsg);
+#else
 				record = XLogReadRecord(xlogreader_state, first_record, &errormsg);
+#endif
 				if (!record)
 					break;
 				/* after reading the first record, continue at next one */
