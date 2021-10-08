@@ -3,6 +3,10 @@ PGXS := $(shell $(PG_CONFIG) --pgxs)
 PGVERSION := $(shell $(PG_CONFIG) --version)
 include $(PGXS)
 
+ifeq ($(findstring 13.,$(PGVERSION)),13.)
+    OBJS = pg_wal_fp_extract.o pg_xlogreader_13.o
+endif
+
 ifeq ($(findstring 12.,$(PGVERSION)),12.)
     OBJS = pg_wal_fp_extract.o pg_xlogreader_12.o
 endif
