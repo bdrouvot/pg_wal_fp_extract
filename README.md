@@ -33,6 +33,7 @@ Usage:
   -e, --end=RECPTR   stop extracting at WAL location RECPTR
   -x, --xid=XID      only extract from records with transaction ID XID
   -r, --rel=RID      only extract pages with relation ID RID
+  -b, --blk=BLK      only extract block number BLK
   -d, --dest         destination directory for extracted block(s) (default /tmp)
   -c, --check        generate checksum in page dump (default false)
   -t, --test         dryrun (display only)

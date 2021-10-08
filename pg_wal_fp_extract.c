@@ -68,10 +68,12 @@ typedef struct XLogDumpConfig
 {
 	bool            	checksum;
 	bool            	dryrun;
-	int                     filter_by_relid;
+	int                 filter_by_relid;
+	int                 filter_by_blk;
 	TransactionId 		filter_by_xid;
 	bool            	filter_by_xid_enabled;
 	bool            	filter_by_relid_enabled;
+	bool            	filter_by_blk_enabled;
 	char			*dump_dest;
 } XLogDumpConfig;
 
@@ -180,8 +182,11 @@ pgwfe_XLogDumpRecord(XLogDumpConfig *config, XLogReaderState *record)
 
 		XLogRecGetBlockTag(record, block_id, &rnode, &forknum, &blk);
 		/* apply all specified filters */
-		if (config->filter_by_relid_enabled &&
-			config->filter_by_relid != rnode.relNode)
+		if ((config->filter_by_relid_enabled &&
+				config->filter_by_relid != rnode.relNode) ||
+			(config->filter_by_blk_enabled &&
+				config->filter_by_blk != blk)
+			)
 			continue;
 
 		if (XLogRecHasBlockImage(record, block_id))
@@ -470,6 +475,7 @@ usage(void)
 	printf(_("  -e, --end=RECPTR   stop extracting at WAL location RECPTR\n"));
 	printf(_("  -x, --xid=XID      only extract from records with transaction ID XID\n"));
 	printf(_("  -r, --rel=RID      only extract pages with relation ID RID\n"));
+	printf(_("  -b, --blk=BLK      only extract block number BLK\n"));
 	printf(_("  -d, --dest         destination directory for extracted block(s) (default /tmp) \n"));
 	printf(_("  -c, --check        generate checksum in page dump (default false)\n"));
 	printf(_("  -t, --test         dryrun (display only)\n"));
@@ -496,6 +502,7 @@ main(int argc, char **argv)
 		{"start", required_argument, NULL, 's'},
 		{"xid", required_argument, NULL, 'x'},
 		{"relid", required_argument, NULL, 'r'},
+		{"blk", required_argument, NULL, 'b'},
 		{"dest", required_argument, NULL, 'd'},
 		{NULL, 0, NULL, 0}
 	};
@@ -542,7 +549,7 @@ main(int argc, char **argv)
 		goto bad_argument;
 	}
 
-	while ((option = getopt_long(argc, argv, "tcx:r:d:e:s:",
+	while ((option = getopt_long(argc, argv, "tcx:r:d:e:s:b:",
 							long_options, &optindex)) != -1)
 	{
 		switch (option)
@@ -576,6 +583,18 @@ main(int argc, char **argv)
 					goto bad_argument;
 				}
 				config.filter_by_relid_enabled = true;
+				break;
+			case 'b':
+				if (sscanf(optarg, "%u", &config.filter_by_blk) != 1)
+				{
+#if PG_VERSION_NUM >= 120000
+					pg_log_error("could not parse \"%s\" as a block number", optarg);
+#else
+					fprintf(stderr, _("%s: could not parse \"%s\" as a block number\n"), progname, optarg);
+#endif
+					goto bad_argument;
+				}
+				config.filter_by_blk_enabled = true;
 				break;
 			case 'd':
 				config.dump_dest = pg_strdup(optarg);
