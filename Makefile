@@ -3,6 +3,10 @@ PGXS := $(shell $(PG_CONFIG) --pgxs)
 PGVERSION := $(shell $(PG_CONFIG) --version)
 include $(PGXS)
 
+ifeq ($(findstring 14.,$(PGVERSION)),14.)
+    OBJS = pg_wal_fp_extract.o pg_xlogreader_14.o
+endif
+
 ifeq ($(findstring 13.,$(PGVERSION)),13.)
     OBJS = pg_wal_fp_extract.o pg_xlogreader_13.o
 endif
@@ -25,3 +29,6 @@ all: pg_wal_fp_extract
 
 pg_wal_fp_extract: $(OBJS)
 	$(CC) $(CFLAGS) $^ $(LDFLAGS) $(LDFLAGS_EX) $(LIBS) -o $@$(X)
+
+clean distclean maintainer-clean:
+	rm -f pg_wal_fp_extract $(OBJS) 
