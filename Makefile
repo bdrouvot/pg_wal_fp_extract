@@ -3,7 +3,9 @@ PGXS := $(shell $(PG_CONFIG) --pgxs)
 PGVERSION := $(shell $(PG_CONFIG) --version)
 include $(PGXS)
 
-ifeq ($(findstring 14.,$(PGVERSION)),14.)
+ifeq ($(findstring 14.0,$(PGVERSION)),14.0)
+    OBJS = pg_wal_fp_extract.o pg_xlogreader_14.0.o
+else ifeq ($(findstring 14.,$(PGVERSION)),14.)
     OBJS = pg_wal_fp_extract.o pg_xlogreader_14.o
 endif
 
